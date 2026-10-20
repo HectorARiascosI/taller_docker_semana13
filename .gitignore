@@ -1,0 +1,12 @@
+# Build artifacts locales (la compilacion ocurre dentro de Docker).
+target/
+*.class
+
+# Intermedios de generacion (no se versionan).
+FORENSIC_REPORT.html
+
+# OS / IDE.
+.DS_Store
+.idea/
+.vscode/
+*.iml

@@ -1,0 +1,168 @@
+# audit_session.log — Registro crudo de terminal (Reto 2 y Reto 3).
+# Imagen eco-air-backend:1.0.0 | STUDENT_ID=871752 | Docker Engine 29.7.2 | 2026-10-20.
+
+$ cd /taller-docker-semana13
+
+# ---------------------------------------------------------------------
+# RETO 1 — Construccion multietapa
+# ---------------------------------------------------------------------
+$ docker build --build-arg STUDENT_ID="871752" -t eco-air-backend:1.0.0 .
+[+] Building done
+ => naming to docker.io/library/eco-air-backend:1.0.0 done
+
+$ docker inspect --format='{{.Id}}' eco-air-backend:1.0.0
+sha256:5b7313eb3588d77c764055432e60b927c7c223d07ebb708839a2d58405275a06
+
+# ---------------------------------------------------------------------
+# RETO 2.1 — Verificacion del desacoplamiento de capas
+# ---------------------------------------------------------------------
+$ docker history --human --format "table {{.Size}}\t{{.CreatedBy}}" eco-air-backend:1.0.0
+SIZE      CREATED BY
+0B        ENTRYPOINT ["sh" "-c" "java $JAVA_OPTS -jar app.jar"]
+0B        USER sensor_user
+48.4MB    RUN |1 STUDENT_ID=871752 /bin/sh -c chown -R sensor_user:sensorgroup /app
+0B        ENV OPERATOR_ID=871752
+0B        ARG STUDENT_ID=871752
+0B        ENV JAVA_OPTS=-XX:InitialRAMPercentage=50 -XX:MaxRAMPercentage=75 -XX:+UseG1GC ...
+48.4MB    COPY /app/target/eco-air-backend.jar app.jar
+4.1kB     WORKDIR /app
+36.9kB    RUN /bin/sh -c addgroup -g 10001 sensorgroup && adduser -u 10001 -G sensorgroup -D -h /app sensor_user
+0B        ENTRYPOINT ["/__cacert_entrypoint.sh"]
+12.3kB    COPY --chmod=755 entrypoint.sh /__cacert_entrypoint.sh
+12.3kB    RUN /bin/sh -c set -eux; echo "Verifying install ..." ...
+141MB     RUN /bin/sh -c set -eux; ARCH="$(apk --print-arch)" ... (instalacion del JRE)
+0B        ENV JAVA_VERSION=jdk-17.0.20.1+1
+44MB      RUN /bin/sh -c set -eux; apk add --no-cache fontconfig ttf-dejavu gnupg ...
+0B        ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
+0B        ENV PATH=/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0B        ENV JAVA_HOME=/opt/java/openjdk
+0B        CMD ["/bin/sh"]
+9.08MB    ADD alpine-minirootfs-3.24.2-x86_64.tar.gz /
+
+# ---------------------------------------------------------------------
+# RETO 2.2 — Inspeccion del proceso del host (aislamiento de privilegios)
+# ---------------------------------------------------------------------
+$ docker run -d --name eco_air_active -p 8080:8080 eco-air-backend:1.0.0
+97a59b3e7f8698e6103d169524f11bfd7d0e457c4dacf379d98751cb0b38e803
+
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:26:55.576278367Z 2026-10-20T21:26:55.575Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 4.683 seconds (process running for 5.224)
+
+$ docker top eco_air_active -o pid,user,comm
+PID                 USER                COMMAND
+2807                10001               java
+
+# Evidencia: java NO corre como root; corre bajo el UID 10001 (sensor_user).
+
+# ---------------------------------------------------------------------
+# RETO 2.3 — Test de penetracion: inmutabilidad de runtime
+# ---------------------------------------------------------------------
+$ docker exec eco_air_active touch /etc/crontab_fake
+touch: cannot touch '/etc/crontab_fake': Permission denied
+
+# Evidencia: sensor_user no puede escribir en /etc. Privilegios efectivos.
+
+# ---------------------------------------------------------------------
+# RETO 2.4 — Auditoria de artefactos de desarrollo
+# ---------------------------------------------------------------------
+$ docker exec eco_air_active which mvn
+# (salida vacia: Maven NO esta en la imagen runtime)
+
+$ docker exec eco_air_active find / -name "*.java" 2>/dev/null
+# (salida vacia: no hay codigo fuente .java en la imagen runtime)
+
+# Evidencia: la imagen runtime solo tiene el JRE + el .jar. Ni build tools ni fuentes.
+
+# ---------------------------------------------------------------------
+# TABLA DE IDENTIDAD — Variable de entorno inyectada
+# ---------------------------------------------------------------------
+$ docker exec eco_air_active env | grep OPERATOR_ID
+OPERATOR_ID=871752
+
+# ---------------------------------------------------------------------
+# RETO 3.1 — Induccion del colapso por memoria (OOMKilled) con 48m
+# ---------------------------------------------------------------------
+$ docker run -d --name eco_air_crash -m 48m eco-air-backend:1.0.0
+# (esperar a que el cgroup colapse)
+
+$ docker inspect eco_air_crash --format='Status: {{.State.Status}} | ExitCode: {{.State.ExitCode}} | OOMKilled: {{.State.OOMKilled}}'
+Status: exited | ExitCode: 137 | OOMKilled: true
+
+$ docker logs eco_air_crash
+2026-10-20T21:27:03.332Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Starting EcoAirApplication v1.0.0 using Java 17.0.20.1
+2026-10-20T21:27:04.067Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : No active profile set, falling back to 1 default profile: "default"
+# (la app nunca llega a arrancar; el OOM killer la mata -> ExitCode 137)
+
+# ---------------------------------------------------------------------
+# RETO 3.2 — Calibracion del limite operativo minimo
+# ---------------------------------------------------------------------
+
+# --- 128m (arranca al borde de 15s y 94% MEM con swap) ---
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 128m -p 8080:8080 eco-air-backend:1.0.0
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:27:43.181Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 13.451 seconds (process running for 13.9)
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O         BLOCK I/O       PIDS
+bdf6adb8ea91   eco_air_active   0.36%     120.8MiB / 128MiB   94.40%    1.17kB / 126B   132MB / 172MB   48
+
+# --- 192m (arranca rapido pero 88% MEM, margen estrecho) ---
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 192m -p 8080:8080 eco-air-backend:1.0.0
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:27:52.171Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 3.614 seconds (process running for 4.002)
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O       BLOCK I/O   PIDS
+7b09dab7d485   eco_air_active   0.34%     169.6MiB / 192MiB   88.33%    1.17kB / 126B   0B / 0B     48
+
+# --- 256m (UMBRAL MINIMO: arranca <15s y estable con margen sano) ---
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 256m -p 8080:8080 eco-air-backend:1.0.0
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:28:02.132Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 4.053 seconds (process running for 4.756)
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O       BLOCK I/O   PIDS
+b2e6ca70eddd   eco_air_active   0.43%     216.5MiB / 256MiB   84.56%    1.17kB / 126B   0B / 0B     48
+
+# --- 384m ---
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 384m -p 8080:8080 eco-air-backend:1.0.0
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:28:11.715Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 3.622 seconds (process running for 4.03)
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O       BLOCK I/O   PIDS
+ba3a276e2252   eco_air_active   0.35%     189.8MiB / 384MiB   49.42%    1.17kB / 126B   0B / 0B     48
+
+# --- 512m ---
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 512m -p 8080:8080 eco-air-backend:1.0.0
+$ docker logs --timestamps eco_air_active | grep "Started EcoAirApplication"
+2026-10-20T21:28:21.187Z  INFO 1 --- [eco-air-backend] [ main]
+  com.ecoair.EcoAirApplication : Started EcoAirApplication in 3.856 seconds (process running for 4.294)
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O         BLOCK I/O   PIDS
+9f06007b6061   eco_air_active   0.27%     210.5MiB / 512MiB   41.10%    1.17kB / 126B   0B / 0B     48
+
+# ---------------------------------------------------------------------
+# Tabla resumen de calibracion
+#   48m  -> OOMKilled (no inicia)
+#   128m -> 13.451s, 94%  (descartado: al borde de 15s e inestable)
+#   192m -> 3.614s,  88%  (margen estrecho)
+#   256m -> 4.053s,  84% -> estabiliza en 68%  (UMBRAL MINIMO RECOMENDADO)
+#   384m -> 3.622s,  49%
+#   512m -> 3.856s,  41%
+# ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# TABLA DE IDENTIDAD — Consumo final calibrado (umbral 256m)
+# ---------------------------------------------------------------------
+$ docker rm -f eco_air_active; docker run -d --name eco_air_active -m 256m -p 8080:8080 eco-air-backend:1.0.0
+$ docker stats --no-stream eco_air_active
+CONTAINER ID   NAME             CPU %     MEM USAGE / LIMIT   MEM %     NET I/O         BLOCK I/O   PIDS
+421eb161867b   eco_air_active   0.39%     174.5MiB / 256MiB   68.17%    1.17kB / 126B   0B / 0B     48
+
+# =====================================================================
+# FIN DE LA AUDITORIA
+# =====================================================================

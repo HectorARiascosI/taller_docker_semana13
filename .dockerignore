@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+
+# Version control y IDEs
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+*.iml
+
+# Logs y temporales
+*.log
+logs/
+
+# Documentacion
+*.md
+HELP.md
+
+# Sistema operativo
+.DS_Store
+
+# Maven wrapper (la imagen builder ya incluye Maven)
+.mvn/
+mvnw
+mvnw.cmd
